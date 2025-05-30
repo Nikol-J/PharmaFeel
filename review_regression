@@ -1,0 +1,174 @@
+# Predicting a rating value as close as possible to the gold standart.
+# Model Number 1: Linear Regression
+# Embeddings: S-BERT (all-MiniLM-L6-v2)
+# Labels balancing technique: None
+# MAE = 2.38 (In a scale of 1-10)
+
+# Proccesing the data
+df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce')
+df = df[df['Rating'].notnull()].copy()
+
+df['cleaned_content'] = df['Content'].apply(clean_text)
+
+# Creating embeddings
+model = SentenceTransformer('all-MiniLM-L6-v2')
+df['embeddings'] = df['cleaned_content'].apply(lambda x: model.encode(x))
+
+# Linear Regression on embeddings
+X = np.vstack(df['embeddings'].values)
+y = df['Rating'].values
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+reg = LinearRegression()
+reg.fit(X_train, y_train)
+y_pred = reg.predict(X_test)
+
+# Evaluating the model
+mae = mean_absolute_error(y_test, y_pred)
+mse = mean_squared_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+
+print(f"MAE: {mae:.2f}")
+print(f"MSE: {mse:.2f}")
+print(f"R² Score:{r2:.2f}")
+
+
+# Model Number 2: K-Nearest Neighbors Regression (k=5)
+# Embeddings: S-BERT (all-MiniLM-L6-v2)
+# Labels balancing technique: None
+# MAE = 2.18 (In a scale of 1-10)
+
+# Using the same enbeddings we created for the previous model
+
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+df['embeddings'] = df['cleaned_content'].apply(lambda x: model.encode(x))
+
+X = np.vstack(df['embeddings'].values)
+y = df['Rating'].values
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Training KNN regression
+knn_reg = KNeighborsRegressor(n_neighbors=5, metric='cosine')  # אפשר גם 'euclidean'
+knn_reg.fit(X_train, y_train)
+
+# Prediction
+y_pred_knn = knn_reg.predict(X_test)
+
+# Model Evaluation
+mae_knn = mean_absolute_error(y_test, y_pred_knn)
+mse_knn = mean_squared_error(y_test, y_pred_knn)
+r2_knn = r2_score(y_test, y_pred_knn)
+
+print(" KNN Regressor Results:")
+print(f"MAE: {mae_knn:.2f}")
+print(f"MSE: {mse_knn:.2f}")
+print(f"R² Score: {r2_knn:.2f}")
+
+
+# Saving files of SBERT embeddings for the next models
+# Creating a directory
+output_dir = "output_embeddings"
+os.makedirs(output_dir, exist_ok=True)
+
+# Text Processing
+def clean_text(text):
+    text = str(text).lower()
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+df['cleaned_content'] = df['Content'].apply(clean_text)
+texts = df['cleaned_content'].tolist()
+
+# SBERT
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Parameters to saving efficiently
+batch_size = 32
+chunk_size = 10000
+num_chunks = ceil(len(texts) / chunk_size)
+
+# Checking if the files exist already
+for i in range(num_chunks):
+    start = i * chunk_size
+    end = min((i + 1) * chunk_size, len(texts))
+    chunk_texts = texts[start:end]
+
+    filename = os.path.join(output_dir, f"embeddings_part_{i}.pkl")
+
+    if os.path.exists(filename):
+        print(f"  part {i+1} already exists, skipping..")
+        continue
+
+    print(f" creating embeddings for chunk {i+1}/{num_chunks} ({start} עד {end})...")
+    chunk_embeddings = model.encode(chunk_texts, batch_size=batch_size, show_progress_bar=True)
+
+    with open(filename, "wb") as f:
+        pickle.dump(chunk_embeddings, f)
+
+    print(f" saved as part {i+1} {filename}")
+
+
+# Creating a file of all embeddings
+output_dir = "output_embeddings"
+merged_file = os.path.join(output_dir, "embeddings_all.pkl")
+
+if os.path.exists(merged_file):
+    print(f"The file already exists: {merged_file}")
+else:
+    # Saving by file order
+    part_files = sorted([
+        f for f in os.listdir(output_dir)
+        if f.startswith("embeddings_part_") and f.endswith(".pkl")
+    ], key=lambda x: int(re.search(r'\d+', x).group()))
+
+    if not part_files:
+        print("No files exist.")
+    else:
+        all_embeddings = []
+
+        for f in part_files:
+            full_path = os.path.join(output_dir, f)
+            print(f" Loading.. : {f}")
+            with open(full_path, "rb") as file:
+                embeddings = pickle.load(file)
+                all_embeddings.append(embeddings)
+
+        merged_embeddings = np.vstack(all_embeddings)
+        print(f" United {len(all_embeddings)} files, matrix shape: {merged_embeddings.shape}")
+
+        with open(merged_file, "wb") as f:
+            pickle.dump(merged_embeddings, f)
+
+        print(f"Saved successfuly as: {merged_file}")
+
+
+# Model Number 3: Ridge Regression (alpha=1.0)
+# Embeddings: Sentence-BERT ('all-MiniLM-L6-v2')
+# Label Balancing Technique: None
+# Evaluation Metric (MAE): 3.14 (on a rating scale of 1 to 10)
+
+# Using saved embeddings
+with open("embeddings_all.pkl", "rb") as f:
+    X = pickle.load(f)
+
+# Loading data
+df = pd.read_csv(file_path)
+df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce')
+df = df[df['Rating'].notnull()]
+y = df['Rating'].values[:X.shape[0]]
+
+# Splitting the data to 80% train and 20% test
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+reg = Ridge(alpha=1.0)
+reg.fit(X_train, y_train)
+y_pred = reg.predict(X_test)
+
+# Results
+print(f"MAE: {mean_absolute_error(y_test, y_pred):.2f}")
+print(f"MSE: {mean_squared_error(y_test, y_pred):.2f}")
+print(f"R²: {r2_score(y_test,y_pred):.2f}")
